@@ -14,68 +14,8 @@ A **truly open-source** implementation of the GPT-OSS architecture, pre-trained 
 
 ---
 
-## Architecture
-
-```mermaid
-graph TD
-    A["Token IDs"] --> B["Embedding (201K → 1024)"]
-    B --> BLOCK
-
-    subgraph BLOCK["× 24 Transformer Blocks"]
-        direction TB
-        C["RMSNorm → QKV → GQA Attention<br/>RoPE · Sliding Window · Sinks"] --> D["⊕ Residual"]
-        D --> E["RMSNorm → Router → Top-2 Expert FFN<br/>SwiGLU (1024→2048→1024)"] --> F["⊕ Residual"]
-    end
-
-    BLOCK --> G["RMSNorm → Linear (1024 → 201K) → Logits"]
-
-    style BLOCK fill:#0d1117,stroke:#3fb950,color:#fff
-```
-
-<details>
-<summary><strong>Architecture at a glance (text version)</strong></summary>
-
-```
-Input IDs (seq_len,)
-    │
-    ▼
-┌─────────────────────────────────────────────────────────┐
-│  Token Embedding: 201,088 vocab → 1024-d vectors        │
-└─────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────────────────────┐
-│  × 24 Transformer Blocks                                │
-│                                                         │
-│  ┌───────────────────────────────────────────────────┐  │
-│  │  RMSNorm → QKV(1024→1536) → Split Q|K|V          │  │
-│  │  → RoPE → GQA (16Q : 4KV) → Attention            │  │
-│  │    • Scaled dot-product (1/√64)                   │  │
-│  │    • Causal mask (no future tokens)               │  │
-│  │    • Sliding window w=128 (even layers)           │  │
-│  │    • Attention sinks (16 scalars)                 │  │
-│  │  → Output Projection (1024→1024)                  │  │
-│  │  → ⊕ Residual                                     │  │
-│  └───────────────────────────────────────────────────┘  │
-│                         │                               │
-│  ┌───────────────────────────────────────────────────┐  │
-│  │  RMSNorm → Router (4 experts, pick top-2)         │  │
-│  │  → Expert FFN (SwiGLU: 1024 → 2048 → 1024)       │  │
-│  │  → Weighted blend → ⊕ Residual                    │  │
-│  └───────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────────────────────┐
-│  Final RMSNorm → Linear (1024 → 201,088) → Logits      │
-└─────────────────────────────────────────────────────────┘
-```
-
-</details>
-
 ## Table of Contents
 
-- [Architecture](#architecture)
 - [What's Different from GPT-2?](#whats-different-from-gpt-2)
 - [Results](#results)
 - [Complete Architecture Deep Dive](#complete-architecture-deep-dive)
@@ -90,6 +30,7 @@ Input IDs (seq_len,)
   - [Mixture of Experts (MoE)](#9-mixture-of-experts-moe)
 - [Training Pipeline](#training-pipeline)
 - [Inference & Sampling](#inference--sampling)
+- [Architecture Diagram](#architecture-diagram)
 - [Project Structure](#project-structure)
 - [Quick Start](#quick-start)
 - [Training Configuration](#training-configuration)
@@ -681,6 +622,153 @@ This project is structured as a **learning resource**. Recommended order:
 - How does MoE give more capacity without proportional compute?
 - How does the training loop actually work (forward → loss → backward → update)?
 - How does auto-regressive text generation work step by step?
+
+---
+
+## Architecture Diagram
+
+```
+                          ┌─────────────────────┐
+                          │   Token IDs (seq,)   │
+                          └──────────┬──────────┘
+                                     │
+                                     ▼
+                    ┌────────────────────────────────┐
+                    │    Embedding Table (201088×1024) │
+                    │    lookup: ID → 1024-d vector   │
+                    └──────────────┬─────────────────┘
+                                   │
+                          ┌────────▼────────┐
+                          │  x: (seq, 1024)  │
+                          └────────┬────────┘
+                                   │
+          ┌────────────────────────┼────────────────────────┐
+          │                        │                        │
+          │            ╔═══════════▼══════════════╗         │
+          │            ║   TRANSFORMER BLOCK      ║         │
+          │            ║     (× 12 layers)        ║         │
+          │            ╠══════════════════════════╣         │
+          │            ║                          ║         │
+          │    ┌───────╨──────────────────────────╨───────┐ │
+          │    │         ATTENTION SUB-BLOCK              │ │
+          │    │                                          │ │
+          │    │  ┌────────────────────────────────────┐  │ │
+          │    │  │  RMSNorm (1024)                    │  │ │
+          │    │  │  x_norm = x / RMS(x) × scale      │  │ │
+          │    │  └──────────────┬─────────────────────┘  │ │
+          │    │                 │                         │ │
+          │    │                 ▼                         │ │
+          │    │  ┌────────────────────────────────────┐  │ │
+          │    │  │  QKV Linear (1024 → 1536)          │  │ │
+          │    │  │  ┌──────┬──────┬──────┐            │  │ │
+          │    │  │  │ Q    │  K   │  V   │            │  │ │
+          │    │  │  │(1024)│ (256)│ (256) │            │  │ │
+          │    │  │  │ 16hd │ 4hd  │ 4hd  │            │  │ │
+          │    │  │  └──┬───┴──┬───┴──┬───┘            │  │ │
+          │    │  └─────┼──────┼──────┼────────────────┘  │ │
+          │    │        │      │      │                    │ │
+          │    │        ▼      ▼      │                    │ │
+          │    │  ┌─────────────────┐ │                    │ │
+          │    │  │  RoPE Rotation  │ │                    │ │
+          │    │  │  Q,K only       │ │                    │ │
+          │    │  │  (pos → angle)  │ │                    │ │
+          │    │  └────────┬────────┘ │                    │ │
+          │    │           │          │                    │ │
+          │    │           ▼          ▼                    │ │
+          │    │  ┌────────────────────────────────────┐  │ │
+          │    │  │  GQA: 4 groups × 4 Q per KV head   │  │ │
+          │    │  │                                     │  │ │
+          │    │  │  Q·K^T / √64  → (seq × seq) scores │  │ │
+          │    │  │  + causal mask  (upper tri = -inf)  │  │ │
+          │    │  │  + sliding window w=128 (even lyrs) │  │ │
+          │    │  │  + attention sink column (+1 col)   │  │ │
+          │    │  │  → softmax → drop sink → × V       │  │ │
+          │    │  └────────────────┬───────────────────┘  │ │
+          │    │                   │                       │ │
+          │    │                   ▼                       │ │
+          │    │  ┌────────────────────────────────────┐  │ │
+          │    │  │  Output Proj (1024 → 1024)         │  │ │
+          │    │  └────────────────┬───────────────────┘  │ │
+          │    │                   │                       │ │
+          │    └───────────────────┼───────────────────────┘ │
+          │              ┌────────▼────────┐                 │
+          │  residual ──►│   x + attn_out  │                 │
+          │              └────────┬────────┘                 │
+          │                       │                          │
+          │    ┌──────────────────┼──────────────────────┐   │
+          │    │         MOE SUB-BLOCK                   │   │
+          │    │                  │                       │   │
+          │    │  ┌───────────────▼──────────────────┐   │   │
+          │    │  │  RMSNorm (1024)                  │   │   │
+          │    │  └───────────────┬──────────────────┘   │   │
+          │    │                  │                       │   │
+          │    │                  ▼                       │   │
+          │    │  ┌──────────────────────────────────┐   │   │
+          │    │  │  Router: Linear (1024 → 4)       │   │   │
+          │    │  │  → top-2 experts selected        │   │   │
+          │    │  │  → softmax weights               │   │   │
+          │    │  └──────┬──────────────┬────────────┘   │   │
+          │    │         │              │                 │   │
+          │    │    ┌────▼────┐    ┌────▼────┐           │   │
+          │    │    │Expert A │    │Expert B │ (2 of 4)  │   │
+          │    │    │         │    │         │           │   │
+          │    │    │Up(1024  │    │Up(1024  │           │   │
+          │    │    │ →2048)  │    │ →2048)  │           │   │
+          │    │    │         │    │         │           │   │
+          │    │    │SwiGLU   │    │SwiGLU   │           │   │
+          │    │    │(2048    │    │(2048    │           │   │
+          │    │    │ →1024)  │    │ →1024)  │           │   │
+          │    │    │         │    │         │           │   │
+          │    │    │Dn(1024  │    │Dn(1024  │           │   │
+          │    │    │ →1024)  │    │ →1024)  │           │   │
+          │    │    └────┬────┘    └────┬────┘           │   │
+          │    │         │              │                 │   │
+          │    │         ▼              ▼                 │   │
+          │    │  ┌──────────────────────────────────┐   │   │
+          │    │  │  Weighted Blend: w₁·A + w₂·B     │   │   │
+          │    │  └──────────────┬───────────────────┘   │   │
+          │    │                 │                        │   │
+          │    └─────────────────┼────────────────────────┘   │
+          │              ┌──────▼───────┐                     │
+          │  residual ──►│  x + moe_out │                     │
+          │              └──────┬───────┘                     │
+          │                     │                             │
+          │                     ▼                             │
+          │              (repeat × 12)                        │
+          │                                                   │
+          └───────────────────────────────────────────────────┘
+                                │
+                                ▼
+                    ┌───────────────────────┐
+                    │  Final RMSNorm (1024)  │
+                    └───────────┬───────────┘
+                                │
+                                ▼
+                    ┌───────────────────────┐
+                    │  Unembedding Linear    │
+                    │  (1024 → 201,088)      │
+                    └───────────┬───────────┘
+                                │
+                                ▼
+                    ┌───────────────────────┐
+                    │  Logits (seq, 201088)  │
+                    │  → softmax → sample   │
+                    └───────────────────────┘
+```
+
+**Key dimensions at each stage:**
+
+| Stage | Shape | Notes |
+|-------|-------|-------|
+| Input | `(seq,)` | Token IDs |
+| Embedding | `(seq, 1024)` | Dense vectors |
+| Q projection | `(seq, 16, 64)` | 16 query heads × 64d |
+| K, V projection | `(seq, 4, 64)` | 4 KV heads × 64d (GQA 4:1) |
+| Attention scores | `(4, 4, seq, seq)` | Per KV-group, per Q-head |
+| + Sink column | `(4, 4, seq, seq+1)` | Extra column absorbs noise |
+| Expert up | `(tokens, 2048)` | 2× for SwiGLU split |
+| Expert down | `(tokens, 1024)` | Back to hidden size |
+| Output logits | `(seq, 201088)` | Score per vocab token |
 
 ---
 
