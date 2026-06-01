@@ -5,15 +5,20 @@ from dataclasses import dataclass
 class ModelConfig:
     vocab_size: int = 201088
     hidden_size: int = 1024
-    num_layers: int = 24
+    num_hidden_layers: int = 12
     num_attention_heads: int = 16
     num_key_value_heads: int = 4
     head_dim: int = 64
     intermediate_size: int = 1024
     num_experts: int = 4
     experts_per_token: int = 2
+    swiglu_limit: float = 7.0
     sliding_window: int = 128
-    rope_theta: float = 500000.0
+    rope_theta: float = 150000.0
+    initial_context_length: int = 4096
+    rope_scaling_factor: float = 1.0
+    rope_ntk_alpha: float = 1.0
+    rope_ntk_beta: float = 32.0
     max_position_embeddings: int = 131072
     rms_norm_eps: float = 1e-5
     context_len: int = 4096
