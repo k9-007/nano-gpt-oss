@@ -18,58 +18,18 @@ A **truly open-source** implementation of the GPT-OSS architecture, pre-trained 
 
 ```mermaid
 graph TD
-    subgraph INPUT["Input"]
-        A["Token IDs<br/>(seq_len,)"]
-    end
-
-    subgraph EMBED["Embedding Layer"]
-        B["Token Embedding<br/>201,088 → 1024-d"]
-    end
+    A["Token IDs"] --> B["Embedding (201K → 1024)"]
+    B --> BLOCK
 
     subgraph BLOCK["× 24 Transformer Blocks"]
         direction TB
-        subgraph ATTN["Attention Sub-block"]
-            C["RMSNorm"]
-            D["QKV Projection<br/>(1024 → 1536)"]
-            E["Split: Q(1024) | K(256) | V(256)"]
-            F["RoPE<br/>(position via rotation)"]
-            G["GQA: 4 groups × 4 Q heads<br/>sharing 1 KV head each"]
-            H["Scaled Dot-Product Attention<br/>+ Causal Mask<br/>+ Sliding Window (even layers)<br/>+ Attention Sinks"]
-            I["Output Projection<br/>(1024 → 1024)"]
-        end
-        J["⊕ Residual"]
-
-        subgraph MoE["MoE Sub-block"]
-            K["RMSNorm"]
-            L["Router → Top-2 of 4 Experts"]
-            M["Expert FFN: SwiGLU<br/>1024 → 2048 → 1024"]
-            N["Weighted Blend"]
-        end
-        O["⊕ Residual"]
+        C["RMSNorm → QKV → GQA Attention<br/>RoPE · Sliding Window · Sinks"] --> D["⊕ Residual"]
+        D --> E["RMSNorm → Router → Top-2 Expert FFN<br/>SwiGLU (1024→2048→1024)"] --> F["⊕ Residual"]
     end
 
-    subgraph OUTPUT["Output"]
-        P["Final RMSNorm"]
-        Q["Unembedding Linear<br/>1024 → 201,088"]
-        R["Logits<br/>(seq_len, vocab_size)"]
-    end
+    BLOCK --> G["RMSNorm → Linear (1024 → 201K) → Logits"]
 
-    A --> B
-    B --> C
-    C --> D --> E --> F --> G --> H --> I
-    I --> J
-    J --> K
-    K --> L --> M --> N
-    N --> O
-    O -->|"repeat ×24"| C
-    O --> P --> Q --> R
-
-    style INPUT fill:#1a1a2e,stroke:#58a6ff,color:#fff
-    style EMBED fill:#1a1a2e,stroke:#d29922,color:#fff
     style BLOCK fill:#0d1117,stroke:#3fb950,color:#fff
-    style ATTN fill:#161b22,stroke:#58a6ff,color:#fff
-    style MoE fill:#161b22,stroke:#f778ba,color:#fff
-    style OUTPUT fill:#1a1a2e,stroke:#d29922,color:#fff
 ```
 
 <details>
