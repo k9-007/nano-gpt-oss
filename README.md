@@ -627,6 +627,13 @@ This project is structured as a **learning resource**. Recommended order:
 
 ## Architecture Diagram
 
+<p align="center">
+  <img src="assets/gpt-oss-architecture.png" alt="GPT-OSS Architecture Overview" width="800"/>
+</p>
+
+<details>
+<summary><strong>Text version (for accessibility)</strong></summary>
+
 ```
                           ┌─────────────────────┐
                           │   Token IDs (seq,)   │
@@ -769,6 +776,8 @@ This project is structured as a **learning resource**. Recommended order:
 | Expert up | `(tokens, 2048)` | 2× for SwiGLU split |
 | Expert down | `(tokens, 1024)` | Back to hidden size |
 | Output logits | `(seq, 201088)` | Score per vocab token |
+
+</details>
 
 ---
 
